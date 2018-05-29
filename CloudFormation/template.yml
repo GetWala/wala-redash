@@ -1,0 +1,142 @@
+
+# Set up an Elastic IP for this instance to make it publicly accessible
+EIPRedash:
+  Type: AWS::EC2::EIP
+  DependsOn: EC2InstanceRedash
+  Properties:
+    InstanceId: 
+          Ref: EC2InstanceRedash
+
+# Set up the Redis for Redash
+ElastiCacheReplicationGroup:
+  Type: AWS::ElastiCache::ReplicationGroup
+  Properties:
+    ReplicationGroupDescription: redash
+    AtRestEncryptionEnabled: true
+    AutoMinorVersionUpgrade: true
+    CacheNodeType: ${self:custom.profiles.${self:provider.stage}.ELASTIC_CACHE_INSTANCE_TYPE}
+    Engine: redis
+    EngineVersion: 3.2.6
+    AutomaticFailoverEnabled: false
+    NumNodeGroups: 1
+    ReplicasPerNodeGroup: 0
+    Tags:
+    - Key: Name
+      Value: 
+          Fn::Sub: '#{AWS::StackName}-redis'
+
+DBInstance:
+  Type: AWS::RDS::DBInstance
+  Properties:
+    AllocatedStorage: 20
+    AllowMajorVersionUpgrade: true
+    AutoMinorVersionUpgrade: true
+    BackupRetentionPeriod: 7
+    DBInstanceClass: ${self:custom.profiles.${self:provider.stage}.DB_INSTANCE_CLASS}
+    DBInstanceIdentifier: redash
+    DBName: redash
+    Engine: postgres
+    EngineVersion: 9.6.5
+    MasterUsername: redash
+    MasterUserPassword: ${env:POSTGRES_PASSWORD, self:custom.profiles.${self:provider.stage}.POSTGRES_PASSWORD}
+    MultiAZ: false
+    PubliclyAccessible: true
+    StorageType: gp2
+    Tags:
+    - Key: Name
+      Value: 
+          Fn::Sub: '#{AWS::StackName}-RDS'
+        
+RedashRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+      - Effect: Allow
+        Principal:
+          Service: 'ec2.amazonaws.com'
+        Action:
+        - sts:AssumeRole
+    Path: "/"
+    Policies:
+    - PolicyName: LogRolePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          - logs:DescribeLogStreams
+          Resource: 'arn:aws:logs:*:*:*'
+        - Effect: Allow
+          Action:
+          - "cloudformation:Describe*"
+          - "cloudformation:List*"
+          - "cloudformation:Get*"
+          - "cloudformation:PreviewStackUpdate"
+          - "cloudformation:SignalResource"
+          Resource: '*' 
+
+RedashRoleInstaceProfile:
+  Type: AWS::IAM::InstanceProfile
+  Properties:
+    Path: "/"
+    Roles:
+    - Ref: RedashRole
+
+
+EC2InstanceRedash:
+  Type: AWS::EC2::Instance
+  Properties:
+    InstanceType: ${self:custom.profiles.${self:provider.stage}.REDASH_INSTANCE_TYPE}
+    KeyName: ${self:custom.profiles.${self:provider.stage}.KEYNAME}
+    IamInstanceProfile:
+      Ref: RedashRoleInstaceProfile
+    SourceDestCheck: false
+    ImageId: ami-6abd4013
+    Tags:
+    - Key: Name
+      Value: redash
+    # This is the huge script to set up all the things we need on the machine
+    # The most important file is the /opt/redash/.env file, which defines the Redis and PostgreSQL databases
+    UserData:
+      "Fn::Base64":
+        "Fn::Sub":
+          - |
+              #!/bin/bash
+              apt-get update -y
+              apt-get -y install python-pip ntp
+              pip install awscli --upgrade
+              pip uninstall -y pyOpenSSL # For whatever reason, the AMI doesn't have the right pyOpenSSL
+              pip install pyOpenSSL 
+              cp /opt/redash/.env /opt/redash/.env.bak
+              sed -i '/URL/d' /opt/redash/.env # Remove the existing REDIS_URL and REDASH_DATABASE_URL environment variables
+              echo 'export REDASH_REDIS_URL=redis://#{RedisURL}:6379/0' >> /opt/redash/.env # Point to the Redis database
+              echo 'export REDASH_DATABASE_URL=postgresql://redash:${env:POSTGRES_PASSWORD, self:custom.profiles.${self:provider.stage}.POSTGRES_PASSWORD}@#{PostgresURL}:5432/redash' >> /opt/redash/.env # Point to the PostgreSQL database
+              cd /opt/redash/current && sudo -u redash bin/run ./manage.py database create_tables  # Gotta set up the database
+              yes | /opt/redash/current/bin/upgrade # Latest and greatest
+              supervisorctl restart all
+              touch /tmp/done # So that we know it worked
+              rm /var/lib/cloud/instances/*/sem/config_scripts_user
+
+          - RedisURL:
+              'Fn::GetAtt': 
+                - ElastiCacheReplicationGroup
+                - PrimaryEndPoint.Address
+
+            PostgresURL:
+              'Fn::GetAtt': 
+                - DBInstance
+                - Endpoint.Address
+
+IPAssociaton:
+  Type: AWS::EC2::EIPAssociation
+  DependsOn: EC2InstanceRedash
+  Properties:
+    AllocationId: 
+      Fn::GetAtt: EIPRedash.AllocationId
+    InstanceId: 
+      Ref: EC2InstanceRedash

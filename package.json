@@ -1,0 +1,29 @@
+{
+  "name": "wala-redash",
+  "version": "0.0.0",
+  "description": "Wala redash implementation",
+  "main": "none",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublish": "yarn upgrade serverless-cf-vars",
+    "deploy-sandbox": "AWS_PROFILE=sandbox sls deploy --stage dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GetWala/wala-feature-flags.git"
+  },
+  "keywords": [
+    "flagr",
+    "wala"
+  ],
+  "author": "jmaleonard",
+  "license": "ISC",
+  "bugs": {
+    "url": "asdasdasd"
+  },
+  "homepage": "asdasdasd",
+  "dependencies": {
+    "serverless-cf-vars": "git+ssh://git@github.com/GetWala/serverless-cf-vars.git#master",
+    "serverless-pseudo-parameters": "^1.4.2"
+  }
+}
